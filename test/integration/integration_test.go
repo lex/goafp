@@ -409,6 +409,69 @@ func TestSetAttrAndStatFS(t *testing.T) {
 	}
 }
 
+func TestSymlink(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sess := login(t)
+	defer sess.Logout(ctx)
+
+	vol, err := sess.OpenVolume(ctx, cfg(t, "GOAFP_TEST_VOLUME"))
+	if err != nil {
+		t.Fatalf("OpenVolume: %v", err)
+	}
+	defer vol.Close(ctx)
+
+	link := "gotest-link"
+	target := "subdir/nested.txt"
+	_ = vol.Delete(ctx, afp.RootDirID, link)
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ccancel()
+		vol.Delete(cctx, afp.RootDirID, link)
+	})
+
+	if err := vol.Symlink(ctx, afp.RootDirID, link, target); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	// Stat should now report it as a symlink.
+	e, err := vol.Stat(ctx, afp.RootDirID, link)
+	if err != nil {
+		t.Fatalf("Stat link: %v", err)
+	}
+	if !e.IsSymlink {
+		t.Errorf("created object is not reported as a symlink: %+v", e)
+	}
+
+	// And the target must read back.
+	got, err := vol.ReadLink(ctx, afp.RootDirID, link)
+	if err != nil {
+		t.Fatalf("ReadLink: %v", err)
+	}
+	if got != target {
+		t.Errorf("readlink = %q, want %q", got, target)
+	}
+
+	// It should also appear as a symlink in an enumeration.
+	entries, err := vol.ReadDir(ctx, afp.RootDirID, "")
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	found := false
+	for _, ent := range entries {
+		if ent.Name == link {
+			found = true
+			if !ent.IsSymlink {
+				t.Errorf("enumerated %q is not a symlink", link)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("%q missing from enumeration", link)
+	}
+}
+
 func names(entries []afp.DirEntry) []string {
 	out := make([]string, len(entries))
 	for i, e := range entries {

@@ -57,6 +57,7 @@ type DirEntry struct {
 	ModTime     time.Time
 	UnixPrivs   UnixPrivs
 	HasUnix     bool
+	IsSymlink   bool // detected from the "slnk" Finder info signature
 }
 
 // parseEntryParams decodes one bitmapped parameter block. The fields
@@ -82,7 +83,11 @@ func parseEntryParams(block []byte, isDir bool, bitmap uint16) (DirEntry, error)
 		r.u32("backup date")
 	}
 	if bitmap&kFPFinderInfoBit != 0 {
-		r.take(32, "finder info")
+		fi := r.take(32, "finder info")
+		// A file whose Finder type is "slnk" is an AFP symbolic link.
+		if len(fi) >= 4 && string(fi[:4]) == "slnk" {
+			e.IsSymlink = true
+		}
 	}
 	if bitmap&kFPLongNameBit != 0 {
 		off := r.u16("long name offset")

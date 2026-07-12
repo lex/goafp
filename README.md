@@ -45,9 +45,9 @@ netatalk (verified in CI-style integration tests, see below).
       rename/move, delete
 - [x] NFS bridge mounting for Linux + macOS (`goafp mount`), with
       chmod/chown/utimes and statfs mapped through to AFP
+- [x] Symlinks (create, readlink, detected in stat/enumerate)
 - [x] netatalk-in-Docker integration test suite (incl. end-to-end NFS)
 - [ ] Cleartext/SRP UAMs
-- [ ] Symlink support over the bridge
 
 ## Usage
 

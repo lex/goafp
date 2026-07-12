@@ -127,7 +127,9 @@ func (f *FS) Stat(filename string) (os.FileInfo, error) {
 }
 
 func (f *FS) Lstat(filename string) (os.FileInfo, error) {
-	// AFP symlinks are not yet distinguished; treat as a normal stat.
+	// Stat already reports symlinks as symlinks (it reads Finder info),
+	// which is what NFS wants: the server describes the link and the
+	// client resolves it via Readlink.
 	return f.Stat(filename)
 }
 
@@ -195,13 +197,23 @@ func (f *FS) TempFile(dir, prefix string) (billy.File, error) {
 	return f.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
 }
 
-// --- billy.Symlink (unsupported for now) ---
+// --- billy.Symlink ---
 
-var errNoSymlink = errors.New("afp: symlinks are not supported over the NFS bridge")
+// Symlink creates a symbolic link named link that points at target. target
+// is stored verbatim (it may be relative), so it is not path-resolved.
+func (f *FS) Symlink(target, link string) error {
+	if err := f.vol.Symlink(f.ctx, afp.RootDirID, f.resolve(link), target); err != nil {
+		return &os.PathError{Op: "symlink", Path: link, Err: mapErr(err)}
+	}
+	return nil
+}
 
-func (f *FS) Symlink(target, link string) error { return errNoSymlink }
 func (f *FS) Readlink(link string) (string, error) {
-	return "", &os.PathError{Op: "readlink", Path: link, Err: errNoSymlink}
+	t, err := f.vol.ReadLink(f.ctx, afp.RootDirID, f.resolve(link))
+	if err != nil {
+		return "", &os.PathError{Op: "readlink", Path: link, Err: mapErr(err)}
+	}
+	return t, nil
 }
 
 // --- billy.Chroot ---
@@ -285,7 +297,10 @@ func entryInfo(name string, e afp.DirEntry) *fileInfo {
 			mode = 0o644
 		}
 	}
-	if e.IsDir {
+	switch {
+	case e.IsSymlink:
+		mode |= os.ModeSymlink
+	case e.IsDir:
 		mode |= os.ModeDir
 	}
 	return &fileInfo{

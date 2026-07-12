@@ -234,7 +234,7 @@ func (v *Volume) Close(ctx context.Context) error {
 
 func (v *Volume) entryBitmaps() (fileBitmap, dirBitmap uint16) {
 	fileBitmap = kFPParentDirIDBit | kFPCreateDateBit | kFPModDateBit |
-		kFPNodeIDBit | kFPUTF8NameBit | kFPExtDataForkLenBit
+		kFPNodeIDBit | kFPUTF8NameBit | kFPExtDataForkLenBit | kFPFinderInfoBit
 	dirBitmap = kFPParentDirIDBit | kFPCreateDateBit | kFPModDateBit |
 		kFPNodeIDBit | kFPUTF8NameBit | kFPOffspringCountBit
 	if v.SupportsUnixPrivs() {
