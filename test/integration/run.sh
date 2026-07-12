@@ -19,6 +19,9 @@ printf 'hello, world!\n' > "$share/hello.txt"
 mkdir "$share/subdir"
 printf 'nested\n' > "$share/subdir/nested.txt"
 printf 'yum\n' > "$share/smörgåsbord.txt"
+# A few MB filled with a repeating 0..250 byte pattern, for the pipelined
+# large-read test. Built with a tiny Go program to match patternData.
+go run ./test/integration/mkbig "$share/big.bin" 4194304
 chmod -R a+rwX "$share"
 
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true

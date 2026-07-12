@@ -37,10 +37,11 @@ netatalk (verified in CI-style integration tests, see below).
 - [x] `goafp status` — query a server without authenticating
 - [x] Login: guest (No User Authent) and DHX2 (Diffie-Hellman + CAST5)
 - [x] Volume list/open, directory enumeration, stat, UTF-8 path handling
+- [x] File reads with pipelined readahead (concurrent FPReadExt, in-order
+      reassembly)
 - [x] netatalk-in-Docker integration test suite
 - [ ] Cleartext/SRP UAMs
-- [ ] File read/write with readahead and write coalescing
-- [ ] Write path (create, mkdir, rename, delete)
+- [ ] Write path (create, write with coalescing, mkdir, rename, delete)
 - [ ] NFS bridge mounting (Linux + macOS)
 
 ## Usage
@@ -58,6 +59,10 @@ go build ./cmd/goafp
 # List a directory in a volume
 ./goafp ls afp://alice:secret@myserver.local/Documents
 ./goafp ls afp://alice:secret@myserver.local/Documents/subdir
+
+# Read a file to stdout, or download it
+./goafp cat afp://alice:secret@myserver.local/Documents/notes.txt
+./goafp get afp://alice:secret@myserver.local/Documents/archive.zip
 ```
 
 ## Development

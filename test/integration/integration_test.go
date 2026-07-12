@@ -11,6 +11,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"testing"
@@ -165,6 +166,79 @@ func TestReadDirAndStat(t *testing.T) {
 	}
 	if len(sub) != 1 || sub[0].Name != "nested.txt" {
 		t.Errorf("subdir contents = %v", names(sub))
+	}
+}
+
+func TestReadFile(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sess := login(t)
+	defer sess.Logout(ctx)
+
+	vol, err := sess.OpenVolume(ctx, cfg(t, "GOAFP_TEST_VOLUME"))
+	if err != nil {
+		t.Fatalf("OpenVolume: %v", err)
+	}
+	defer vol.Close(ctx)
+
+	fork, err := vol.OpenFork(ctx, afp.RootDirID, "hello.txt")
+	if err != nil {
+		t.Fatalf("OpenFork: %v", err)
+	}
+	defer fork.Close(ctx)
+
+	if fork.Size != 14 {
+		t.Errorf("fork size = %d, want 14", fork.Size)
+	}
+
+	var buf bytes.Buffer
+	n, err := fork.WriteToContext(ctx, &buf)
+	if err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+	if want := "hello, world!\n"; buf.String() != want || n != int64(len(want)) {
+		t.Errorf("file contents = %q (%d bytes), want %q", buf.String(), n, want)
+	}
+}
+
+// TestReadLargeFilePipelined seeds a multi-megabyte file, reads it back,
+// and checks it comes through intact across many pipelined chunks.
+func TestReadLargeFilePipelined(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	sess := login(t)
+	defer sess.Logout(ctx)
+
+	vol, err := sess.OpenVolume(ctx, cfg(t, "GOAFP_TEST_VOLUME"))
+	if err != nil {
+		t.Fatalf("OpenVolume: %v", err)
+	}
+	defer vol.Close(ctx)
+
+	fork, err := vol.OpenFork(ctx, afp.RootDirID, "big.bin")
+	if err != nil {
+		t.Skipf("big.bin not present (seeded by run.sh): %v", err)
+	}
+	defer fork.Close(ctx)
+
+	// Small chunks so a few MB exercises many concurrent requests.
+	fork.SetReadAhead(64*1024, 8)
+
+	var buf bytes.Buffer
+	n, err := fork.WriteToContext(ctx, &buf)
+	if err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+	if uint64(n) != fork.Size {
+		t.Errorf("read %d bytes, fork size %d", n, fork.Size)
+	}
+	// run.sh fills big.bin with a repeating byte pattern.
+	for i, b := range buf.Bytes() {
+		if b != byte(i%251) {
+			t.Fatalf("byte %d = %d, want %d (pipelined reassembly bug?)", i, b, i%251)
+		}
 	}
 }
 

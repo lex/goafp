@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -16,26 +17,34 @@ import (
 const usage = `usage: goafp <command> [arguments]
 
 Commands:
-  status  <host[:port]>              query an AFP server without authenticating
-  volumes <afp://[user[:pass]@]host>            list volumes on a server
-  ls      <afp://[user[:pass]@]host/volume[/path]>  list a directory
+  status  <host[:port]>                              query a server, no auth
+  volumes <afp://[user[:pass]@]host>                 list volumes on a server
+  ls      <afp://[user[:pass]@]host/volume[/path]>   list a directory
+  cat     <afp://[user[:pass]@]host/volume/path>     stream a file to stdout
+  get     <afp://[user[:pass]@]host/volume/path> [localfile]
+                                                     download a file
 
 With no user in the URL, goafp connects as a guest.
 `
 
 func main() {
-	if len(os.Args) != 3 {
+	if len(os.Args) < 3 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	args := os.Args[2:]
 	var err error
 	switch os.Args[1] {
 	case "status":
-		err = runStatus(os.Args[2])
+		err = runStatus(args[0])
 	case "volumes":
-		err = runVolumes(os.Args[2])
+		err = runVolumes(args[0])
 	case "ls":
-		err = runLs(os.Args[2])
+		err = runLs(args[0])
+	case "cat":
+		err = runCat(args[0])
+	case "get":
+		err = runGet(args)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -201,6 +210,78 @@ func runLs(raw string) error {
 		fmt.Println(formatEntry(e))
 	}
 	return nil
+}
+
+func runCat(raw string) error {
+	return withFork(raw, func(ctx context.Context, f *afp.Fork) error {
+		_, err := f.WriteToContext(ctx, os.Stdout)
+		return err
+	})
+}
+
+func runGet(args []string) error {
+	raw := args[0]
+	t, err := parseTarget(raw)
+	if err != nil {
+		return err
+	}
+	local := ""
+	if len(args) > 1 {
+		local = args[1]
+	} else if t.path != "" {
+		local = path.Base(t.path)
+	}
+	if local == "" || local == "." || local == "/" {
+		return fmt.Errorf("cannot infer a local filename; pass one explicitly")
+	}
+
+	return withFork(raw, func(ctx context.Context, f *afp.Fork) error {
+		out, err := os.Create(local)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		n, err := f.WriteToContext(ctx, out)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "wrote %s (%d bytes)\n", local, n)
+		return out.Close()
+	})
+}
+
+// withFork resolves an afp:// URL down to an open data fork and runs fn.
+func withFork(raw string, fn func(context.Context, *afp.Fork) error) error {
+	t, err := parseTarget(raw)
+	if err != nil {
+		return err
+	}
+	if t.volume == "" || t.path == "" {
+		return fmt.Errorf("URL must name a volume and a file path")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	conn, sess, err := connect(ctx, t)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	defer sess.Logout(ctx)
+
+	vol, err := sess.OpenVolume(ctx, t.volume)
+	if err != nil {
+		return err
+	}
+	defer vol.Close(ctx)
+
+	fork, err := vol.OpenFork(ctx, afp.RootDirID, t.path)
+	if err != nil {
+		return err
+	}
+	defer fork.Close(ctx)
+
+	return fn(ctx, fork)
 }
 
 func formatEntry(e afp.DirEntry) string {
