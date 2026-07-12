@@ -30,7 +30,7 @@ type statfsHandler struct {
 }
 
 func (h *statfsHandler) FSStat(ctx context.Context, _ billy.Filesystem, s *nfs.FSStat) error {
-	info, err := h.fs.vol.StatFS(h.fs.ctx)
+	info, err := h.fs.cm.statFS()
 	if err != nil {
 		// Non-fatal: report unknown capacity rather than failing the mount.
 		return nil

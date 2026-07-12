@@ -1,45 +1,102 @@
 package nfsfs
 
 import (
+	"context"
 	"io"
 	"sync"
 
 	"github.com/lex/goafp/internal/afp"
 )
 
-// File is a billy.File backed by an open AFP fork. A cursor supports the
-// stream-style Read/Write/Seek that go-nfs uses for writes, while ReadAt
-// serves positioned reads directly. The mutex prevents data races on the
-// cursor when the NFS server touches one handle from multiple goroutines.
+// File is a billy.File backed by an open AFP fork. Because a fork ID is
+// only valid within one connection generation, the File remembers its path
+// and re-opens the fork transparently after a reconnect (detected by the
+// volume pointer changing). A cursor supports the stream-style
+// Read/Write/Seek that go-nfs uses for writes.
 type File struct {
-	fs       *FS
-	fork     *afp.Fork
-	name     string
+	cm       *connManager
+	name     string // billy path (for Name / errors)
+	path     string // resolved AFP path
 	writable bool
 
-	mu     sync.Mutex
-	cursor int64
-	size   int64
+	mu      sync.Mutex
+	fork    *afp.Fork
+	forkVol *afp.Volume // the volume generation the fork belongs to
+	cursor  int64
+	size    int64
 }
 
 func (f *File) Name() string { return f.name }
 
+// open (re)opens the fork against vol. Callers hold f.mu (or are within
+// OpenFile before the File is shared).
+func (f *File) open(ctx context.Context, vol *afp.Volume) (*afp.Fork, error) {
+	if f.fork != nil && f.forkVol == vol {
+		return f.fork, nil
+	}
+	var (
+		fork *afp.Fork
+		err  error
+	)
+	if f.writable {
+		fork, err = vol.OpenForkRW(ctx, afp.RootDirID, f.path)
+	} else {
+		fork, err = vol.OpenFork(ctx, afp.RootDirID, f.path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	f.fork = fork
+	f.forkVol = vol
+	return fork, nil
+}
+
+// withFork runs fn against a valid fork, re-opening it if a reconnect has
+// invalidated the previous one. Callers hold f.mu.
+func (f *File) withFork(fn func(ctx context.Context, fork *afp.Fork) error) error {
+	return f.cm.do(func(ctx context.Context, vol *afp.Volume) error {
+		fork, err := f.open(ctx, vol)
+		if err != nil {
+			return err
+		}
+		return fn(ctx, fork)
+	})
+}
+
 func (f *File) Read(p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n, err := f.fork.ReadAt(f.fs.ctx, p, f.cursor)
+	var n int
+	err := f.withFork(func(ctx context.Context, fork *afp.Fork) error {
+		var e error
+		n, e = fork.ReadAt(ctx, p, f.cursor)
+		return e
+	})
 	f.cursor += int64(n)
 	return n, err
 }
 
 func (f *File) ReadAt(p []byte, off int64) (int, error) {
-	return f.fork.ReadAt(f.fs.ctx, p, off)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int
+	err := f.withFork(func(ctx context.Context, fork *afp.Fork) error {
+		var e error
+		n, e = fork.ReadAt(ctx, p, off)
+		return e
+	})
+	return n, err
 }
 
 func (f *File) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n, err := f.fork.WriteAt(f.fs.ctx, p, f.cursor)
+	var n int
+	err := f.withFork(func(ctx context.Context, fork *afp.Fork) error {
+		var e error
+		n, e = fork.WriteAt(ctx, p, f.cursor)
+		return e
+	})
 	f.cursor += int64(n)
 	if f.cursor > f.size {
 		f.size = f.cursor
@@ -62,17 +119,35 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *File) Truncate(size int64) error {
-	if err := f.fork.Truncate(f.fs.ctx, size); err != nil {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	err := f.withFork(func(ctx context.Context, fork *afp.Fork) error {
+		return fork.Truncate(ctx, size)
+	})
+	if err != nil {
 		return mapErr(err)
 	}
-	f.mu.Lock()
 	f.size = size
-	f.mu.Unlock()
 	return nil
 }
 
 func (f *File) Close() error {
-	return f.fork.Close(f.fs.ctx)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fork == nil {
+		return nil
+	}
+	fork, vol := f.fork, f.forkVol
+	f.fork, f.forkVol = nil, nil
+	// Only close if the fork still belongs to the current generation; a
+	// fork from a superseded connection was already dropped with its
+	// socket, and its ID would mean something else now.
+	return f.cm.do(func(ctx context.Context, cur *afp.Volume) error {
+		if cur != vol {
+			return nil
+		}
+		return fork.Close(ctx)
+	})
 }
 
 // Lock and Unlock are no-ops: AFP byte-range locking is not wired through

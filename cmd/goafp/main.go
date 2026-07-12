@@ -372,27 +372,34 @@ func runMount(args []string) error {
 		addr = args[1]
 	}
 
-	// The connection lives for the life of the mount, so use a
-	// background context rather than a short deadline.
-	ctx := context.Background()
-	conn, sess, err := connect(ctx, t)
-	if err != nil {
-		return err
+	// The dialer establishes a fresh authenticated connection with the
+	// volume open. The bridge calls it initially and again to recover if
+	// the link drops.
+	dial := func(dctx context.Context) (*dsi.Conn, *afp.Session, *afp.Volume, error) {
+		conn, sess, err := connect(dctx, t)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		vol, err := sess.OpenVolume(dctx, t.volume)
+		if err != nil {
+			conn.Close()
+			return nil, nil, nil, err
+		}
+		return conn, sess, vol, nil
 	}
-	defer conn.Close()
 
-	vol, err := sess.OpenVolume(ctx, t.volume)
+	fsys, err := nfsfs.New(context.Background(), dial, 0)
 	if err != nil {
 		return err
 	}
-	defer vol.Close(ctx)
+	defer fsys.Close()
 
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	printMountHelp(l.Addr().(*net.TCPAddr), t.volume)
-	return nfsfs.Serve(l, nfsfs.New(ctx, vol), 4096)
+	return nfsfs.Serve(l, fsys, 4096)
 }
 
 func printMountHelp(a *net.TCPAddr, volume string) {

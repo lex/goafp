@@ -23,8 +23,12 @@ and fixing that meant rebuilding the core anyway.
   that the OS mounts with its built-in NFS client — `mount_nfs` on macOS,
   `mount -t nfs` on Linux. One codepath for both platforms; no macFUSE
   kext, no kernel extensions. Metadata operations (chmod, chown, utimes)
-  and `statfs` map through to AFP. The billy adapter is protocol-agnostic,
-  so an SMB frontend could reuse the same core.
+  and `statfs` map through to AFP.
+- **Durable**: keepalive tickles stop idle mounts from being dropped, and
+  the bridge transparently reconnects (re-login, re-open volume, re-open
+  file handles) after a server sleep or network blip. Every operation is
+  bounded by a timeout, so a hung server surfaces an error instead of
+  wedging the mount.
 - **Testability**: protocol logic is exercised against in-process mock
   servers with fault injection; performance properties are asserted as
   round-trip counts, not wall-clock times.

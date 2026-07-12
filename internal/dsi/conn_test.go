@@ -175,6 +175,51 @@ func TestOpenSessionParsesServerQuantum(t *testing.T) {
 	}
 }
 
+func TestTickleKeepalive(t *testing.T) {
+	old := TickleInterval
+	TickleInterval = 20 * time.Millisecond
+	defer func() { TickleInterval = old }()
+
+	clientEnd, serverEnd := net.Pipe()
+	defer serverEnd.Close()
+
+	tickled := make(chan struct{}, 1)
+	go func() {
+		for {
+			var hb [HeaderSize]byte
+			if _, err := io.ReadFull(serverEnd, hb[:]); err != nil {
+				return
+			}
+			h := decodeHeader(hb)
+			payload := make([]byte, h.Length)
+			io.ReadFull(serverEnd, payload)
+			switch {
+			case h.Flags == flagRequest && h.Command == CmdOpenSession:
+				writeReply(serverEnd, h, nil) // empty options
+			case h.Flags == flagRequest && h.Command == CmdTickle:
+				select {
+				case tickled <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+
+	c := NewConn(clientEnd)
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.OpenSession(ctx); err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	select {
+	case <-tickled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no tickle sent within 2s of OpenSession")
+	}
+}
+
 func TestServerCloseFailsPendingRequests(t *testing.T) {
 	clientEnd, serverEnd := net.Pipe()
 

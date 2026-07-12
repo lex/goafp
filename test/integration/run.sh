@@ -60,4 +60,5 @@ GOAFP_TEST_ADDR="127.0.0.1:$PORT" \
 GOAFP_TEST_USER="$USER" \
 GOAFP_TEST_PASS="$PASS" \
 GOAFP_TEST_VOLUME="$VOLUME" \
+GOAFP_TEST_CONTAINER="$CONTAINER" \
     go test -tags integration -count=1 -v ./test/integration/

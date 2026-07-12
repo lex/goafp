@@ -8,7 +8,13 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
+
+// TickleInterval is how often the client sends a DSITickle to keep the
+// connection alive. AFP servers drop peers that fall silent, so an idle
+// mount needs these. It is a variable so tests can shorten it.
+var TickleInterval = 30 * time.Second
 
 // maxPayload bounds how large a payload we accept from a server. Real
 // replies are limited by the negotiated quantum (typically <= 1 MB); this
@@ -133,6 +139,11 @@ func (c *Conn) OpenSession(ctx context.Context) error {
 		return err
 	}
 
+	// Now that a session exists, keep it alive with periodic tickles.
+	// Read the interval here (on the caller's goroutine) rather than in
+	// the loop, so tests can vary it without racing the ticker goroutine.
+	go c.tickleLoop(TickleInterval)
+
 	// The reply payload is a sequence of (type, length, value) options.
 	for i := 0; i+2 <= len(r.Payload); {
 		typ, n := r.Payload[i], int(r.Payload[i+1])
@@ -214,6 +225,32 @@ func (c *Conn) err() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closeErr
+}
+
+// IsAlive reports whether the connection is still usable (no read error or
+// close has torn it down).
+func (c *Conn) IsAlive() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeErr == nil
+}
+
+// tickleLoop sends a DSITickle at the given interval until the connection
+// dies.
+func (c *Conn) tickleLoop(interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+			h := Header{Flags: flagRequest, Command: CmdTickle, RequestID: c.newID()}
+			if err := c.send(h, nil); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // fail marks the connection dead and wakes every waiter.

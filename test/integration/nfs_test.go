@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lex/goafp/internal/afp"
+	"github.com/lex/goafp/internal/dsi"
 	"github.com/lex/goafp/internal/nfsfs"
 	nfsclient "github.com/willscott/go-nfs-client/nfs"
 	"github.com/willscott/go-nfs-client/nfs/rpc"
@@ -22,20 +24,42 @@ func TestNFSBridgeEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sess := login(t)
-	defer sess.Logout(context.Background())
-
-	vol, err := sess.OpenVolume(ctx, cfg(t, "GOAFP_TEST_VOLUME"))
-	if err != nil {
-		t.Fatalf("OpenVolume: %v", err)
+	// A dialer that logs in and opens the volume; the bridge reuses it for
+	// reconnects.
+	dial := func(dctx context.Context) (*dsi.Conn, *afp.Session, *afp.Volume, error) {
+		info := fetchStatus(t)
+		conn, err := dsi.Dial(dctx, cfg(t, "GOAFP_TEST_ADDR"))
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if err := conn.OpenSession(dctx); err != nil {
+			conn.Close()
+			return nil, nil, nil, err
+		}
+		sess := afp.NewSession(conn)
+		if err := sess.Login(dctx, info, cfg(t, "GOAFP_TEST_USER"), cfg(t, "GOAFP_TEST_PASS")); err != nil {
+			conn.Close()
+			return nil, nil, nil, err
+		}
+		vol, err := sess.OpenVolume(dctx, cfg(t, "GOAFP_TEST_VOLUME"))
+		if err != nil {
+			conn.Close()
+			return nil, nil, nil, err
+		}
+		return conn, sess, vol, nil
 	}
-	defer vol.Close(context.Background())
+
+	fsys, err := nfsfs.New(ctx, dial, 0)
+	if err != nil {
+		t.Fatalf("nfsfs.New: %v", err)
+	}
+	defer fsys.Close()
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	go nfsfs.Serve(l, nfsfs.New(ctx, vol), 1024)
+	go nfsfs.Serve(l, fsys, 1024)
 	defer l.Close()
 
 	// go-nfs multiplexes MOUNT and NFS on the single listener port with no
