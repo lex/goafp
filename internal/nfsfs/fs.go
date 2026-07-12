@@ -217,17 +217,55 @@ func (f *FS) Root() string {
 	return "/" + f.base
 }
 
-// --- billy.Change (best effort) ---
+// --- billy.Change ---
 //
-// AFP over this bridge does not yet map chmod/chown/utimes onto the
-// protocol, so these report success without changing anything. That keeps
-// NFS clients (which routinely set attributes after create) working; the
-// requested metadata change is simply not persisted.
+// chmod/chown map onto AFP unix privileges (only on volumes that carry
+// them; otherwise they succeed as no-ops so NFS clients aren't blocked).
+// chtimes maps onto the modification date. Access-time changes have no AFP
+// equivalent and are ignored.
 
-func (f *FS) Chmod(name string, mode os.FileMode) error         { return nil }
-func (f *FS) Lchown(name string, uid, gid int) error            { return nil }
-func (f *FS) Chown(name string, uid, gid int) error             { return nil }
-func (f *FS) Chtimes(name string, atime, mtime time.Time) error { return nil }
+const sIFMT = 0o170000 // file-type mask within a unix mode
+
+func (f *FS) Chmod(name string, mode os.FileMode) error {
+	if !f.vol.SupportsUnixPrivs() {
+		return nil
+	}
+	p := f.resolve(name)
+	e, err := f.vol.Stat(f.ctx, afp.RootDirID, p)
+	if err != nil {
+		return mapErr(err)
+	}
+	// Preserve the file-type bits; replace the permission bits.
+	perm := (uint32(mode) & 0o7777) | (e.UnixPrivs.Permissions & sIFMT)
+	return mapErr(f.vol.SetUnixPrivs(f.ctx, afp.RootDirID, p, e.UnixPrivs.UID, e.UnixPrivs.GID, perm))
+}
+
+func (f *FS) Lchown(name string, uid, gid int) error { return f.chown(name, uid, gid) }
+func (f *FS) Chown(name string, uid, gid int) error  { return f.chown(name, uid, gid) }
+
+func (f *FS) chown(name string, uid, gid int) error {
+	if !f.vol.SupportsUnixPrivs() {
+		return nil
+	}
+	p := f.resolve(name)
+	e, err := f.vol.Stat(f.ctx, afp.RootDirID, p)
+	if err != nil {
+		return mapErr(err)
+	}
+	// A negative id means "leave unchanged" (POSIX chown convention).
+	newUID, newGID := e.UnixPrivs.UID, e.UnixPrivs.GID
+	if uid >= 0 {
+		newUID = uint32(uid)
+	}
+	if gid >= 0 {
+		newGID = uint32(gid)
+	}
+	return mapErr(f.vol.SetUnixPrivs(f.ctx, afp.RootDirID, p, newUID, newGID, e.UnixPrivs.Permissions))
+}
+
+func (f *FS) Chtimes(name string, atime, mtime time.Time) error {
+	return mapErr(f.vol.SetModTime(f.ctx, afp.RootDirID, f.resolve(name), mtime))
+}
 
 // fileInfo implements os.FileInfo for an AFP entry.
 type fileInfo struct {

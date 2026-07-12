@@ -22,6 +22,7 @@ const (
 	cmdRename          uint8 = 28
 	cmdSetForkParms    uint8 = 31
 	cmdGetFileDirParms uint8 = 34
+	cmdSetFileDirParms uint8 = 35
 	cmdReadExt         uint8 = 60
 	cmdWriteExt        uint8 = 61
 	cmdEnumerateExt2   uint8 = 68

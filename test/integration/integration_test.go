@@ -339,6 +339,76 @@ func TestWritePathRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetAttrAndStatFS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sess := login(t)
+	defer sess.Logout(ctx)
+
+	vol, err := sess.OpenVolume(ctx, cfg(t, "GOAFP_TEST_VOLUME"))
+	if err != nil {
+		t.Fatalf("OpenVolume: %v", err)
+	}
+	defer vol.Close(ctx)
+
+	// StatFS should report a real, non-empty volume.
+	fsinfo, err := vol.StatFS(ctx)
+	if err != nil {
+		t.Fatalf("StatFS: %v", err)
+	}
+	if fsinfo.TotalBytes == 0 || fsinfo.BlockSize == 0 {
+		t.Errorf("StatFS returned empty info: %+v", fsinfo)
+	}
+	t.Logf("statfs: total=%d free=%d bsize=%d", fsinfo.TotalBytes, fsinfo.FreeBytes, fsinfo.BlockSize)
+
+	if !vol.SupportsUnixPrivs() {
+		t.Skip("volume has no unix privs; skipping chmod/chtimes checks")
+	}
+
+	name := "gotest-attr.txt"
+	if err := vol.CreateFile(ctx, afp.RootDirID, name, true); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ccancel()
+		vol.Delete(cctx, afp.RootDirID, name)
+	})
+
+	before, err := vol.Stat(ctx, afp.RootDirID, name)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	// chmod to 0600, preserving the file-type bits.
+	const sIFMT = 0o170000
+	newMode := uint32(0o600) | (before.UnixPrivs.Permissions & sIFMT)
+	if err := vol.SetUnixPrivs(ctx, afp.RootDirID, name, before.UnixPrivs.UID, before.UnixPrivs.GID, newMode); err != nil {
+		t.Fatalf("SetUnixPrivs: %v", err)
+	}
+	after, err := vol.Stat(ctx, afp.RootDirID, name)
+	if err != nil {
+		t.Fatalf("stat after chmod: %v", err)
+	}
+	if got := after.UnixPrivs.Permissions & 0o777; got != 0o600 {
+		t.Errorf("permissions after chmod = %o, want 600", got)
+	}
+
+	// set modification time and confirm it round-trips (within a second).
+	want := time.Date(2021, 6, 15, 12, 30, 0, 0, time.UTC)
+	if err := vol.SetModTime(ctx, afp.RootDirID, name, want); err != nil {
+		t.Fatalf("SetModTime: %v", err)
+	}
+	got, err := vol.Stat(ctx, afp.RootDirID, name)
+	if err != nil {
+		t.Fatalf("stat after utime: %v", err)
+	}
+	if diff := got.ModTime.Sub(want); diff > time.Second || diff < -time.Second {
+		t.Errorf("mod time after set = %v, want ~%v", got.ModTime, want)
+	}
+}
+
 func names(entries []afp.DirEntry) []string {
 	out := make([]string, len(entries))
 	for i, e := range entries {

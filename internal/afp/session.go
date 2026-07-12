@@ -160,8 +160,11 @@ func (s *Session) ListVolumes(ctx context.Context) ([]VolumeInfo, error) {
 
 // Volume bitmap bits (FPOpenVol / FPGetVolParms).
 const (
-	kFPVolAttributeBit = 0x0001
-	kFPVolIDBit        = 0x0020
+	kFPVolAttributeBit     = 0x0001
+	kFPVolIDBit            = 0x0020
+	kFPVolExtBytesFreeBit  = 0x0200
+	kFPVolExtBytesTotalBit = 0x0400
+	kFPVolBlockSizeBit     = 0x0800
 )
 
 // Volume attribute bits.
