@@ -18,11 +18,12 @@ and fixing that meant rebuilding the core anyway.
   default, not a retrofit.
 - **Pure-Go protocol layer** (`internal/afp`): AFP 3.x commands and reply
   parsing, every offset bounds-checked.
-- **Portable mounting (planned)**: goafp will expose mounted volumes as a
-  localhost NFSv3 server and auto-mount it via the OS's built-in NFS
-  client (`mount_nfs` on macOS, `mount -t nfs` on Linux). One codepath for
-  both platforms; no macFUSE kext, no kernel extensions. A native FUSE
-  frontend on Linux may follow.
+- **Portable mounting**: `goafp mount` exposes a volume as a localhost
+  NFSv3 server (`internal/nfsfs`, a go-billy adapter over the AFP layer)
+  that the OS mounts with its built-in NFS client — `mount_nfs` on macOS,
+  `mount -t nfs` on Linux. One codepath for both platforms; no macFUSE
+  kext, no kernel extensions. The billy adapter is protocol-agnostic, so
+  an SMB frontend could reuse the same core.
 - **Testability**: protocol logic is exercised against in-process mock
   servers with fault injection; performance properties are asserted as
   round-trip counts, not wall-clock times.
@@ -41,9 +42,11 @@ netatalk (verified in CI-style integration tests, see below).
       reassembly)
 - [x] Write path: create, pipelined/coalesced writes, truncate, mkdir,
       rename/move, delete
-- [x] netatalk-in-Docker integration test suite
+- [x] NFS bridge mounting for Linux + macOS (`goafp mount`)
+- [x] netatalk-in-Docker integration test suite (incl. end-to-end NFS)
 - [ ] Cleartext/SRP UAMs
-- [ ] NFS bridge mounting (Linux + macOS)
+- [ ] chmod/chown/utimes mapped through the bridge (currently no-ops)
+- [ ] Symlink support over the bridge
 
 ## Usage
 
@@ -70,6 +73,24 @@ go build ./cmd/goafp
 ./goafp mkdir afp://alice:secret@myserver.local/Documents/2026
 ./goafp mv    afp://alice:secret@myserver.local/Documents/report.pdf 2026/report.pdf
 ./goafp rm    afp://alice:secret@myserver.local/Documents/2026/report.pdf
+```
+
+### Mounting a volume
+
+`goafp mount` serves a volume over NFS on localhost; mount it with the
+OS's built-in NFS client (no kernel extension needed):
+
+```sh
+# Terminal 1: serve the volume (stays running)
+./goafp mount afp://alice:secret@myserver.local/Documents
+
+# Terminal 2: mount it (goafp prints the exact command for your OS)
+#   macOS:
+sudo mount_nfs -o vers=3,tcp,port=2049,mountport=2049,noowners,resvport \
+    127.0.0.1:/ /path/to/mountpoint
+#   Linux:
+sudo mount -t nfs -o vers=3,tcp,port=2049,mountport=2049,nolock \
+    127.0.0.1:/ /path/to/mountpoint
 ```
 
 ## Development

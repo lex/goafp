@@ -4,14 +4,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/lex/goafp/internal/afp"
 	"github.com/lex/goafp/internal/dsi"
+	"github.com/lex/goafp/internal/nfsfs"
 )
 
 const usage = `usage: goafp <command> [arguments]
@@ -29,6 +32,8 @@ Commands:
   rm      <afp://[user[:pass]@]host/volume/path>     delete a file or empty dir
   mv      <afp://[user[:pass]@]host/volume/path> <newpath>
                                                      rename within the volume
+  mount   <afp://[user[:pass]@]host/volume> [addr]   serve the volume over NFS
+                                                     (default addr 127.0.0.1:2049)
 
 With no user in the URL, goafp connects as a guest.
 `
@@ -59,6 +64,8 @@ func main() {
 		err = runRm(args[0])
 	case "mv":
 		err = runMv(args)
+	case "mount":
+		err = runMount(args)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -347,6 +354,59 @@ func runMv(args []string) error {
 		}
 		return vol.Rename(ctx, afp.RootDirID, t.path, strings.Trim(args[1], "/"))
 	})
+}
+
+func runMount(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: goafp mount <afp://.../volume> [listen-addr]")
+	}
+	t, err := parseTarget(args[0])
+	if err != nil {
+		return err
+	}
+	if t.volume == "" {
+		return fmt.Errorf("URL must name a volume")
+	}
+	addr := "127.0.0.1:2049"
+	if len(args) > 1 {
+		addr = args[1]
+	}
+
+	// The connection lives for the life of the mount, so use a
+	// background context rather than a short deadline.
+	ctx := context.Background()
+	conn, sess, err := connect(ctx, t)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	vol, err := sess.OpenVolume(ctx, t.volume)
+	if err != nil {
+		return err
+	}
+	defer vol.Close(ctx)
+
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	printMountHelp(l.Addr().(*net.TCPAddr), t.volume)
+	return nfsfs.Serve(l, nfsfs.New(ctx, vol), 4096)
+}
+
+func printMountHelp(a *net.TCPAddr, volume string) {
+	fmt.Printf("Serving AFP volume %q over NFS on %s\n\n", volume, a)
+	fmt.Println("Mount it from another terminal (needs sudo):")
+	switch runtime.GOOS {
+	case "darwin":
+		fmt.Printf("  sudo mount_nfs -o vers=3,tcp,port=%d,mountport=%d,noowners,resvport \\\n"+
+			"    %s:/ /path/to/mountpoint\n", a.Port, a.Port, a.IP)
+	default:
+		fmt.Printf("  sudo mount -t nfs -o vers=3,tcp,port=%d,mountport=%d,nolock \\\n"+
+			"    %s:/ /path/to/mountpoint\n", a.Port, a.Port, a.IP)
+	}
+	fmt.Println("\nPress Ctrl-C to stop serving.")
 }
 
 // withVolume resolves an afp:// URL to an open volume and runs fn.
