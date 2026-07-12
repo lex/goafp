@@ -29,16 +29,19 @@ and fixing that meant rebuilding the core anyway.
 
 ## Status
 
-Early development.
+Early development, but the read path works end to end against real
+netatalk (verified in CI-style integration tests, see below).
 
 - [x] DSI session layer: framing, pipelined request/reply, OpenSession
       quantum negotiation
 - [x] `goafp status` — query a server without authenticating
-- [ ] Login (No User Authent, DHX2)
-- [ ] Volume open, enumerate, getattr
+- [x] Login: guest (No User Authent) and DHX2 (Diffie-Hellman + CAST5)
+- [x] Volume list/open, directory enumeration, stat, UTF-8 path handling
+- [x] netatalk-in-Docker integration test suite
+- [ ] Cleartext/SRP UAMs
 - [ ] File read/write with readahead and write coalescing
+- [ ] Write path (create, mkdir, rename, delete)
 - [ ] NFS bridge mounting (Linux + macOS)
-- [ ] netatalk-in-Docker integration test suite
 
 ## Usage
 
@@ -47,13 +50,30 @@ go build ./cmd/goafp
 
 # Query any AFP server (Time Capsule, netatalk, old macOS)
 ./goafp status myserver.local
+
+# List exported volumes (guest, or user:pass@ for authenticated)
+./goafp volumes afp://myserver.local
+./goafp volumes afp://alice:secret@myserver.local
+
+# List a directory in a volume
+./goafp ls afp://alice:secret@myserver.local/Documents
+./goafp ls afp://alice:secret@myserver.local/Documents/subdir
 ```
 
 ## Development
 
 ```sh
-go test ./...
+go test ./...          # unit tests (mock DSI/AFP servers, no network)
 go vet ./...
+```
+
+### Integration tests
+
+`test/integration/run.sh` spins up netatalk in Docker, seeds a share, and
+runs the suite against it (requires Docker):
+
+```sh
+./test/integration/run.sh
 ```
 
 ## License
