@@ -39,9 +39,10 @@ netatalk (verified in CI-style integration tests, see below).
 - [x] Volume list/open, directory enumeration, stat, UTF-8 path handling
 - [x] File reads with pipelined readahead (concurrent FPReadExt, in-order
       reassembly)
+- [x] Write path: create, pipelined/coalesced writes, truncate, mkdir,
+      rename/move, delete
 - [x] netatalk-in-Docker integration test suite
 - [ ] Cleartext/SRP UAMs
-- [ ] Write path (create, write with coalescing, mkdir, rename, delete)
 - [ ] NFS bridge mounting (Linux + macOS)
 
 ## Usage
@@ -63,6 +64,12 @@ go build ./cmd/goafp
 # Read a file to stdout, or download it
 ./goafp cat afp://alice:secret@myserver.local/Documents/notes.txt
 ./goafp get afp://alice:secret@myserver.local/Documents/archive.zip
+
+# Upload, create directories, rename/move, delete
+./goafp put ./report.pdf afp://alice:secret@myserver.local/Documents/report.pdf
+./goafp mkdir afp://alice:secret@myserver.local/Documents/2026
+./goafp mv    afp://alice:secret@myserver.local/Documents/report.pdf 2026/report.pdf
+./goafp rm    afp://alice:secret@myserver.local/Documents/2026/report.pdf
 ```
 
 ## Development

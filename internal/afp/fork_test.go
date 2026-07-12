@@ -23,18 +23,40 @@ type forkMock struct {
 	nc   net.Conn
 	data []byte
 
-	gate    int
-	reads   int64 // total FPReadExt requests observed
-	maxHeld int64 // high-water mark of concurrent in-flight reads
+	gate       int  // hold this many replies before flushing (0 = off)
+	gateWrites bool // gate writes instead of reads
+	reads      int64
+	writes     int64
+	maxHeld    int64 // high-water mark of concurrent gated requests
 
 	mu   sync.Mutex
-	held []heldRead
+	held []pendingReply
 }
 
-type heldRead struct {
-	reqID  uint16
-	offset int64
-	count  int
+type pendingReply struct {
+	reqID   uint16
+	code    Result
+	payload []byte
+}
+
+// writeInto stores data at offset, growing the backing buffer as needed.
+func (m *forkMock) writeInto(offset int64, data []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	end := int(offset) + len(data)
+	if end > len(m.data) {
+		grown := make([]byte, end)
+		copy(grown, m.data)
+		m.data = grown
+	}
+	copy(m.data[offset:], data)
+}
+
+// contents returns a copy of the current backing buffer.
+func (m *forkMock) contents() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]byte(nil), m.data...)
 }
 
 func startForkMock(t *testing.T, nc net.Conn, data []byte, gate int) *forkMock {
@@ -55,7 +77,10 @@ func (m *forkMock) loop() {
 		if _, err := io.ReadFull(m.nc, payload); err != nil {
 			return
 		}
-		if hb[0] != 0 || hb[1] != dsi.CmdCommand || len(payload) == 0 {
+		if hb[0] != 0 || len(payload) == 0 {
+			continue // not a request, or empty
+		}
+		if hb[1] != dsi.CmdCommand && hb[1] != dsi.CmdWrite {
 			continue
 		}
 		reqID := binary.BigEndian.Uint16(hb[2:4])
@@ -87,23 +112,41 @@ func (m *forkMock) handle(reqID uint16, payload []byte) {
 		atomic.AddInt64(&m.reads, 1)
 		offset := int64(binary.BigEndian.Uint64(payload[4:12]))
 		count := int(binary.BigEndian.Uint64(payload[12:20]))
-		if m.gate > 0 {
-			m.gateRead(reqID, offset, count)
+		data, code := m.slice(offset, count)
+		if m.gate > 0 && !m.gateWrites {
+			m.gateReply(reqID, code, data)
 			return
 		}
-		data, code := m.slice(offset, count)
 		m.send(reqID, code, data)
+	case cmdWriteExt:
+		atomic.AddInt64(&m.writes, 1)
+		offset := int64(binary.BigEndian.Uint64(payload[4:12]))
+		count := int(binary.BigEndian.Uint64(payload[12:20]))
+		data := payload[writeChunkHeaderLen : writeChunkHeaderLen+count]
+		m.writeInto(offset, data)
+		var w builder
+		w.u64(uint64(offset) + uint64(count)) // last-written offset
+		if m.gate > 0 && m.gateWrites {
+			m.gateReply(reqID, ResNoErr, w.b)
+			return
+		}
+		m.send(reqID, ResNoErr, w.b)
+	case cmdSetForkParms:
+		m.send(reqID, ResNoErr, nil)
 	default:
 		m.send(reqID, ResCallNotSupported, nil)
 	}
 }
 
-func (m *forkMock) gateRead(reqID uint16, offset int64, count int) {
+// gateReply holds replies until `gate` of them accumulate, then flushes
+// them in reverse arrival order. If the client issued requests serially,
+// the gate would never fill and the test would block until its deadline —
+// so a passing gated test proves the requests overlapped.
+func (m *forkMock) gateReply(reqID uint16, code Result, payload []byte) {
 	m.mu.Lock()
-	m.held = append(m.held, heldRead{reqID, offset, count})
-	held := int64(len(m.held))
-	if held > atomic.LoadInt64(&m.maxHeld) {
-		atomic.StoreInt64(&m.maxHeld, held)
+	m.held = append(m.held, pendingReply{reqID, code, payload})
+	if n := int64(len(m.held)); n > atomic.LoadInt64(&m.maxHeld) {
+		atomic.StoreInt64(&m.maxHeld, n)
 	}
 	ready := len(m.held) == m.gate
 	batch := m.held
@@ -115,11 +158,8 @@ func (m *forkMock) gateRead(reqID uint16, offset int64, count int) {
 	if !ready {
 		return
 	}
-	// Reply in reverse arrival order to also exercise reassembly.
 	for i := len(batch) - 1; i >= 0; i-- {
-		h := batch[i]
-		data, code := m.slice(h.offset, h.count)
-		m.send(h.reqID, code, data)
+		m.send(batch[i].reqID, batch[i].code, batch[i].payload)
 	}
 }
 

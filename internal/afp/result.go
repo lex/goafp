@@ -20,6 +20,7 @@ const (
 	cmdOpenVol         uint8 = 24
 	cmdOpenFork        uint8 = 26
 	cmdRename          uint8 = 28
+	cmdSetForkParms    uint8 = 31
 	cmdGetFileDirParms uint8 = 34
 	cmdReadExt         uint8 = 60
 	cmdWriteExt        uint8 = 61

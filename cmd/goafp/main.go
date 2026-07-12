@@ -23,6 +23,12 @@ Commands:
   cat     <afp://[user[:pass]@]host/volume/path>     stream a file to stdout
   get     <afp://[user[:pass]@]host/volume/path> [localfile]
                                                      download a file
+  put     <localfile> <afp://[user[:pass]@]host/volume/path>
+                                                     upload a file
+  mkdir   <afp://[user[:pass]@]host/volume/path>     create a directory
+  rm      <afp://[user[:pass]@]host/volume/path>     delete a file or empty dir
+  mv      <afp://[user[:pass]@]host/volume/path> <newpath>
+                                                     rename within the volume
 
 With no user in the URL, goafp connects as a guest.
 `
@@ -45,6 +51,14 @@ func main() {
 		err = runCat(args[0])
 	case "get":
 		err = runGet(args)
+	case "put":
+		err = runPut(args)
+	case "mkdir":
+		err = runMkdir(args[0])
+	case "rm":
+		err = runRm(args[0])
+	case "mv":
+		err = runMv(args)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -248,6 +262,119 @@ func runGet(args []string) error {
 		fmt.Fprintf(os.Stderr, "wrote %s (%d bytes)\n", local, n)
 		return out.Close()
 	})
+}
+
+func runPut(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: goafp put <localfile> <afp://.../volume/path>")
+	}
+	local, raw := args[0], args[1]
+	t, err := parseTarget(raw)
+	if err != nil {
+		return err
+	}
+	if t.volume == "" || t.path == "" {
+		return fmt.Errorf("destination URL must name a volume and a file path")
+	}
+
+	in, err := os.Open(local)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	conn, sess, err := connect(ctx, t)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	defer sess.Logout(ctx)
+
+	vol, err := sess.OpenVolume(ctx, t.volume)
+	if err != nil {
+		return err
+	}
+	defer vol.Close(ctx)
+
+	// Overwrite any existing file, then open read/write and stream.
+	if err := vol.CreateFile(ctx, afp.RootDirID, t.path, true); err != nil {
+		return err
+	}
+	fork, err := vol.OpenForkRW(ctx, afp.RootDirID, t.path)
+	if err != nil {
+		return err
+	}
+	defer fork.Close(ctx)
+
+	// The hard create above already replaced any existing file with an
+	// empty one, so we can stream straight in.
+	n, err := fork.ReadFromContext(ctx, in)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s (%d bytes)\n", t.path, n)
+	return nil
+}
+
+func runMkdir(raw string) error {
+	return withVolume(raw, func(ctx context.Context, vol *afp.Volume, t target) error {
+		if t.path == "" {
+			return fmt.Errorf("URL must name a directory path")
+		}
+		return vol.Mkdir(ctx, afp.RootDirID, t.path)
+	})
+}
+
+func runRm(raw string) error {
+	return withVolume(raw, func(ctx context.Context, vol *afp.Volume, t target) error {
+		if t.path == "" {
+			return fmt.Errorf("URL must name a path to delete")
+		}
+		return vol.Delete(ctx, afp.RootDirID, t.path)
+	})
+}
+
+func runMv(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: goafp mv <afp://.../volume/path> <newpath>")
+	}
+	return withVolume(args[0], func(ctx context.Context, vol *afp.Volume, t target) error {
+		if t.path == "" {
+			return fmt.Errorf("source URL must name a path")
+		}
+		return vol.Rename(ctx, afp.RootDirID, t.path, strings.Trim(args[1], "/"))
+	})
+}
+
+// withVolume resolves an afp:// URL to an open volume and runs fn.
+func withVolume(raw string, fn func(context.Context, *afp.Volume, target) error) error {
+	t, err := parseTarget(raw)
+	if err != nil {
+		return err
+	}
+	if t.volume == "" {
+		return fmt.Errorf("URL must name a volume")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	conn, sess, err := connect(ctx, t)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	defer sess.Logout(ctx)
+
+	vol, err := sess.OpenVolume(ctx, t.volume)
+	if err != nil {
+		return err
+	}
+	defer vol.Close(ctx)
+
+	return fn(ctx, vol, t)
 }
 
 // withFork resolves an afp:// URL down to an open data fork and runs fn.

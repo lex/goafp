@@ -43,13 +43,22 @@ type Fork struct {
 // OpenFork opens the data fork of the file at path (relative to dirID,
 // normally RootDirID) for reading. The returned Fork must be Closed.
 func (v *Volume) OpenFork(ctx context.Context, dirID uint32, path string) (*Fork, error) {
+	return v.openFork(ctx, dirID, path, forkRead)
+}
+
+// OpenForkRW opens the data fork for both reading and writing.
+func (v *Volume) OpenForkRW(ctx context.Context, dirID uint32, path string) (*Fork, error) {
+	return v.openFork(ctx, dirID, path, forkRead|forkWrite)
+}
+
+func (v *Volume) openFork(ctx context.Context, dirID uint32, path string, mode uint16) (*Fork, error) {
 	var w builder
 	w.u8(cmdOpenFork)
 	w.u8(forkTypeData)
 	w.u16(v.ID)
 	w.u32(dirID)
 	w.u16(kFPExtDataForkLenBit) // ask for the fork length
-	w.u16(forkRead)
+	w.u16(mode)
 	w.path(path)
 
 	payload, code, err := v.s.command(ctx, w.b)

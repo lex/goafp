@@ -242,6 +242,103 @@ func TestReadLargeFilePipelined(t *testing.T) {
 	}
 }
 
+func TestWritePathRoundTrip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	sess := login(t)
+	defer sess.Logout(ctx)
+
+	vol, err := sess.OpenVolume(ctx, cfg(t, "GOAFP_TEST_VOLUME"))
+	if err != nil {
+		t.Fatalf("OpenVolume: %v", err)
+	}
+	defer vol.Close(ctx)
+
+	// A subdirectory to keep the test's artifacts together.
+	dir := "gotest-write"
+	_ = vol.Delete(ctx, afp.RootDirID, dir) // best-effort cleanup from prior runs
+	if err := vol.Mkdir(ctx, afp.RootDirID, dir); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	t.Cleanup(func() {
+		cctx, ccancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer ccancel()
+		vol.Delete(cctx, afp.RootDirID, dir+"/renamed.bin")
+		vol.Delete(cctx, afp.RootDirID, dir)
+	})
+
+	// Create and write a multi-chunk file.
+	name := dir + "/upload.bin"
+	if err := vol.CreateFile(ctx, afp.RootDirID, name, true); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	fork, err := vol.OpenForkRW(ctx, afp.RootDirID, name)
+	if err != nil {
+		t.Fatalf("OpenForkRW: %v", err)
+	}
+	fork.SetReadAhead(64*1024, 8)
+
+	want := make([]byte, 500000)
+	for i := range want {
+		want[i] = byte(i % 251)
+	}
+	if _, err := fork.ReadFromContext(ctx, bytes.NewReader(want)); err != nil {
+		t.Fatalf("ReadFrom (upload): %v", err)
+	}
+	if err := fork.Close(ctx); err != nil {
+		t.Fatalf("close after write: %v", err)
+	}
+
+	// Read it back and compare.
+	rfork, err := vol.OpenFork(ctx, afp.RootDirID, name)
+	if err != nil {
+		t.Fatalf("OpenFork (readback): %v", err)
+	}
+	if rfork.Size != uint64(len(want)) {
+		t.Errorf("size after write = %d, want %d", rfork.Size, len(want))
+	}
+	var got bytes.Buffer
+	if _, err := rfork.WriteToContext(ctx, &got); err != nil {
+		t.Fatalf("WriteTo (readback): %v", err)
+	}
+	rfork.Close(ctx)
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("round-tripped content differs (%d vs %d bytes)", got.Len(), len(want))
+	}
+
+	// Truncate it to a smaller size and confirm.
+	twork, err := vol.OpenForkRW(ctx, afp.RootDirID, name)
+	if err != nil {
+		t.Fatalf("OpenForkRW (truncate): %v", err)
+	}
+	if err := twork.Truncate(ctx, 100); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	twork.Close(ctx)
+	if e, err := vol.Stat(ctx, afp.RootDirID, name); err != nil {
+		t.Fatalf("stat after truncate: %v", err)
+	} else if e.Size != 100 {
+		t.Errorf("size after truncate = %d, want 100", e.Size)
+	}
+
+	// Rename it.
+	if err := vol.Rename(ctx, afp.RootDirID, name, dir+"/renamed.bin"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if _, err := vol.Stat(ctx, afp.RootDirID, dir+"/renamed.bin"); err != nil {
+		t.Errorf("stat after rename: %v", err)
+	}
+
+	// Delete it.
+	if err := vol.Delete(ctx, afp.RootDirID, dir+"/renamed.bin"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := vol.Stat(ctx, afp.RootDirID, dir+"/renamed.bin"); err == nil {
+		t.Error("file still present after delete")
+	}
+}
+
 func names(entries []afp.DirEntry) []string {
 	out := make([]string, len(entries))
 	for i, e := range entries {

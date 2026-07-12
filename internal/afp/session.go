@@ -32,6 +32,20 @@ func (s *Session) command(ctx context.Context, payload []byte) ([]byte, Result, 
 	return r.Payload, Result(int32(r.Header.ErrCode)), nil
 }
 
+// commandWrite issues a DSIWrite request, used for FPWriteExt. dataOffset
+// is the position of the bulk write data within payload.
+func (s *Session) commandWrite(ctx context.Context, dataOffset uint32, payload []byte) ([]byte, Result, error) {
+	r, err := s.conn.RequestWrite(ctx, dataOffset, payload)
+	if err != nil {
+		return nil, 0, err
+	}
+	return r.Payload, Result(int32(r.Header.ErrCode)), nil
+}
+
+// serverQuantum is the largest request payload the server accepts (from
+// DSIOpenSession); it caps write chunk sizes. Zero means unknown.
+func (s *Session) serverQuantum() uint32 { return s.conn.ServerQuantum }
+
 // versionPreference lists supported AFP versions, most preferred first.
 // UTF-8 pathnames require AFP 3.x, so 2.x is not supported.
 var versionPreference = []string{"AFP3.4", "AFP3.3", "AFP3.2", "AFP3.1"}
