@@ -49,6 +49,13 @@ done
 # The port opens before afpd fully finishes user setup; give it a moment.
 sleep 2
 
+# Provision an SRP verifier for the test user so the SRP login path can be
+# exercised live. afppasswd -c initializes the file with disabled entries;
+# a second call sets the user's actual verifier. The server reads the file
+# per login, so no restart is needed.
+docker exec "$CONTAINER" sh -c "afppasswd -c -f >/dev/null 2>&1; afppasswd -f -a $USER -w $PASS >/dev/null 2>&1" || \
+    echo "warning: could not provision SRP verifier (SRP test will skip)"
+
 GOAFP_TEST_ADDR="127.0.0.1:$PORT" \
 GOAFP_TEST_USER="$USER" \
 GOAFP_TEST_PASS="$PASS" \

@@ -17,6 +17,7 @@ const (
 	uamNoAuth    = "No User Authent"
 	uamCleartext = "Cleartxt Passwrd"
 	uamDHX2      = "DHX2"
+	uamSRP       = "SRP"
 )
 
 func (s *Session) loginGuest(ctx context.Context) error {

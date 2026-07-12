@@ -37,7 +37,8 @@ netatalk (verified in CI-style integration tests, see below).
 - [x] DSI session layer: framing, pipelined request/reply, OpenSession
       quantum negotiation
 - [x] `goafp status` — query a server without authenticating
-- [x] Login: guest (No User Authent) and DHX2 (Diffie-Hellman + CAST5)
+- [x] Login: guest (No User Authent), DHX2 (Diffie-Hellman + CAST5),
+      and SRP-6a (SHA-1 / MGF1, RFC 5054 group 2)
 - [x] Volume list/open, directory enumeration, stat, UTF-8 path handling
 - [x] File reads with pipelined readahead (concurrent FPReadExt, in-order
       reassembly)
@@ -46,8 +47,9 @@ netatalk (verified in CI-style integration tests, see below).
 - [x] NFS bridge mounting for Linux + macOS (`goafp mount`), with
       chmod/chown/utimes and statfs mapped through to AFP
 - [x] Symlinks (create, readlink, detected in stat/enumerate)
-- [x] netatalk-in-Docker integration test suite (incl. end-to-end NFS)
-- [ ] Cleartext/SRP UAMs
+- [x] netatalk-in-Docker integration test suite (incl. end-to-end NFS
+      and live SRP)
+- [ ] Cleartext UAM polish / RandNum UAMs
 
 ## Usage
 

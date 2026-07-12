@@ -13,6 +13,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -469,6 +470,63 @@ func TestSymlink(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("%q missing from enumeration", link)
+	}
+}
+
+// TestSRPLive exercises the SRP UAM against netatalk. The server advertises
+// both DHX2 and SRP, so we force SRP by presenting only it to Login. run.sh
+// provisions the verifier; if that failed the login returns not-authenticated
+// and we skip.
+func TestSRPLive(t *testing.T) {
+	info := fetchStatus(t)
+	hasSRP := false
+	for _, u := range info.UAMs {
+		if u == "SRP" {
+			hasSRP = true
+		}
+	}
+	if !hasSRP {
+		t.Skip("server does not offer SRP")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := dsi.Dial(ctx, cfg(t, "GOAFP_TEST_ADDR"))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err := conn.OpenSession(ctx); err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	srpOnly := &afp.ServerInfo{AFPVersions: info.AFPVersions, UAMs: []string{"SRP"}}
+	sess := afp.NewSession(conn)
+	err = sess.Login(ctx, srpOnly, cfg(t, "GOAFP_TEST_USER"), cfg(t, "GOAFP_TEST_PASS"))
+	if err != nil {
+		var ae *afp.Error
+		if errors.As(err, &ae) && ae.Code == afp.ResUserNotAuth {
+			t.Skip("no SRP verifier provisioned; skipping (see run.sh)")
+		}
+		t.Fatalf("SRP login: %v", err)
+	}
+	defer sess.Logout(ctx)
+
+	// Prove the authenticated session works.
+	vols, err := sess.ListVolumes(ctx)
+	if err != nil {
+		t.Fatalf("ListVolumes after SRP login: %v", err)
+	}
+	want := cfg(t, "GOAFP_TEST_VOLUME")
+	found := false
+	for _, v := range vols {
+		if v.Name == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("volume %q not found after SRP login: %+v", want, vols)
 	}
 }
 

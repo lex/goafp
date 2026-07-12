@@ -86,7 +86,12 @@ func (s *Session) Login(ctx context.Context, info *ServerInfo, username, passwor
 		}
 		return s.loginGuest(ctx)
 	case uams[uamDHX2]:
+		// DHX2 is preferred where available: it is the method the
+		// legacy servers this client targets use, and it is the most
+		// heavily tested here.
 		return s.loginDHX2(ctx, username, password)
+	case uams[uamSRP]:
+		return s.loginSRP(ctx, username, password)
 	case uams[uamCleartext]:
 		return s.loginCleartext(ctx, username, password)
 	default:
